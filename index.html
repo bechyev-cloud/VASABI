@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>Жар — бургерная</title>
+  <meta name="description" content="Меню бургерной: категории, товары и приём заказов" />
+
+  <!-- Общий манифест PWA (Android, Windows, Chrome/Edge) -->
+  <link rel="manifest" href="manifest.json" />
+
+  <!-- Цвет темы -->
+  <meta name="theme-color" content="#B54B2A" />
+
+  <!-- Android / Chrome -->
+  <meta name="mobile-web-app-capable" content="yes" />
+
+  <!-- iOS / Safari -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Жар" />
+  <link rel="apple-touch-icon" sizes="152x152" href="icons/apple-touch-icon-152.png" />
+  <link rel="apple-touch-icon" sizes="167x167" href="icons/apple-touch-icon-167.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <meta name="format-detection" content="telephone=no" />
+
+  <!-- Windows / Edge / IE tiles -->
+  <meta name="msapplication-config" content="browserconfig.xml" />
+  <meta name="msapplication-TileColor" content="#B54B2A" />
+  <meta name="msapplication-TileImage" content="icons/mstile-150.png" />
+  <meta name="msapplication-navbutton-color" content="#B54B2A" />
+
+  <!-- Favicons (все браузеры / вкладки Windows) -->
+  <link rel="icon" href="favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <div class="loading-screen">Загрузка меню…</div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
