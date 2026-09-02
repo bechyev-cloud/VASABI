@@ -37,6 +37,12 @@
     newCatIcon: "🍔",
     addingProductFor: null,
     companyName: "Жар",
+    backupCopied: false,
+    showImport: false,
+    importError: null,
+    resetCountdown: null,
+    resetConfirmReady: false,
+    navButtonsEnabled: false,
     orders: [],
     queue: [],
     waitingPayment: [],
@@ -94,6 +100,7 @@
         state.categories = parsed.categories || SEED_CATEGORIES;
         state.products = parsed.products || SEED_PRODUCTS;
         state.companyName = parsed.companyName || "Жар";
+        state.navButtonsEnabled = parsed.navButtonsEnabled !== undefined ? parsed.navButtonsEnabled : false;
       } else {
         state.categories = SEED_CATEGORIES;
         state.products = SEED_PRODUCTS;
@@ -107,15 +114,152 @@
 
   function saveData() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ categories: state.categories, products: state.products, companyName: state.companyName }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ categories: state.categories, products: state.products, companyName: state.companyName, navButtonsEnabled: state.navButtonsEnabled }));
     } catch (e) {
       console.error("Storage error", e);
     }
   }
 
+  function toggleNavButtons() {
+    state.navButtonsEnabled = !state.navButtonsEnabled;
+    saveData();
+    render();
+  }
+
   function updateCompanyName(value) {
     state.companyName = value;
     saveData();
+  }
+
+  function exportBackup() {
+    var backup = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      companyName: state.companyName,
+      categories: state.categories,
+      products: state.products,
+      orders: state.orders,
+      queue: state.queue,
+      waitingPayment: state.waitingPayment,
+      debts: state.debts,
+      orderCounter: state.orderCounter
+    };
+    var text = JSON.stringify(backup, null, 2);
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (e) { console.error(e); }
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(fallback);
+    } else {
+      fallback();
+    }
+    state.backupCopied = true;
+    render();
+    setTimeout(function () {
+      state.backupCopied = false;
+      render();
+    }, 1800);
+  }
+
+  function toggleImport() {
+    state.showImport = !state.showImport;
+    state.importError = null;
+    render();
+  }
+
+  function runImport() {
+    var textarea = document.getElementById("import-text");
+    var text = textarea ? textarea.value.trim() : "";
+    if (!text) {
+      state.importError = "Вставьте текст резервной копии";
+      render();
+      return;
+    }
+    var data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      state.importError = "Не удалось прочитать текст — проверьте, что скопирован весь текст полностью";
+      render();
+      return;
+    }
+    if (!data || typeof data !== "object") {
+      state.importError = "Некорректный формат данных";
+      render();
+      return;
+    }
+    state.categories = data.categories || state.categories;
+    state.products = data.products || state.products;
+    state.companyName = data.companyName || state.companyName;
+    state.orders = data.orders || [];
+    state.queue = data.queue || [];
+    state.waitingPayment = data.waitingPayment || [];
+    state.debts = data.debts || [];
+    state.orderCounter = data.orderCounter || state.orderCounter;
+    if (state.categories.length) state.activeCategory = state.categories[0].id;
+    saveData();
+    saveOrders();
+    saveQueue();
+    saveWaitingPayment();
+    saveDebts();
+    saveOrderCounter();
+    state.showImport = false;
+    state.importError = null;
+    render();
+  }
+
+  var resetIntervalId = null;
+
+  function startResetCountdown() {
+    if (resetIntervalId) return;
+    state.resetCountdown = 60;
+    state.resetConfirmReady = false;
+    render();
+    resetIntervalId = setInterval(function () {
+      state.resetCountdown -= 1;
+      if (state.resetCountdown <= 0) {
+        clearInterval(resetIntervalId);
+        resetIntervalId = null;
+        state.resetCountdown = 0;
+        state.resetConfirmReady = true;
+      }
+      render();
+    }, 1000);
+  }
+
+  function cancelResetCountdown() {
+    if (resetIntervalId) {
+      clearInterval(resetIntervalId);
+      resetIntervalId = null;
+    }
+    state.resetCountdown = null;
+    state.resetConfirmReady = false;
+    render();
+  }
+
+  function confirmReset() {
+    if (resetIntervalId) {
+      clearInterval(resetIntervalId);
+      resetIntervalId = null;
+    }
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(ORDERS_STORAGE_KEY);
+      localStorage.removeItem(QUEUE_STORAGE_KEY);
+      localStorage.removeItem(WAITING_STORAGE_KEY);
+      localStorage.removeItem(DEBTS_STORAGE_KEY);
+      localStorage.removeItem(ORDER_COUNTER_KEY);
+    } catch (e) {
+      console.error("Storage error", e);
+    }
+    location.reload();
   }
 
   function seedOrders() {
@@ -371,6 +515,23 @@
     return state.orders.filter(function (o) { return o.date === dayKey; })
       .sort(function (a, b) { return a.time < b.time ? 1 : -1; });
   }
+  function getOrderStatus(orderId) {
+    var debt = state.debts.filter(function (d) { return d.orderId === orderId; })[0];
+    if (debt) return debt.status === "paid" ? "paid" : "debt";
+    var stillActive = state.queue.filter(function (o) { return o.id === orderId; }).length > 0 ||
+      state.waitingPayment.filter(function (o) { return o.id === orderId; }).length > 0;
+    return stillActive ? "waiting" : "paid";
+  }
+  function orderStatusBadge(orderId) {
+    var status = getOrderStatus(orderId);
+    if (status === "debt") {
+      return '<span class="order-status-badge debt">' + iconSvg("debt", 13) + ' Долг</span>';
+    }
+    if (status === "waiting") {
+      return '<span class="order-status-badge waiting">' + iconSvg("clock", 13) + ' Ожидание</span>';
+    }
+    return '<span class="order-status-badge paid">' + iconSvg("check", 13) + ' Оплачено</span>';
+  }
   function sumTotals(list) {
     return list.reduce(function (s, o) { return s + o.total; }, 0);
   }
@@ -391,6 +552,7 @@
       trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>',
       settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
       back: '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/>',
+      forward: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
       flame: '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 17a2.5 2.5 0 0 0 2.5-2.5c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7.5 7.5 0 1 1-15 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2 1z"/>',
       check: '<polyline points="20 6 9 17 4 12"/>',
       close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
@@ -399,7 +561,10 @@
       bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
       report: '<path d="M14 3v4a1 1 0 0 0 1 1h4"/><path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l5 5v11a2 2 0 0 1-2 2z"/><path d="M9 13h6"/><path d="M9 17h6"/><path d="M9 9h1"/>',
       queue: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
-      debt: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M6 12h.01"/><path d="M18 12h.01"/>'
+      debt: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M6 12h.01"/><path d="M18 12h.01"/>',
+      phone: '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>',
+      calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+      trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>'
     };
     return '<svg ' + common + '>' + (paths[name] || "") + '</svg>';
   }
@@ -562,9 +727,22 @@
     "debt-detail": "Данные о клиенте"
   };
 
+  function renderNavControls() {
+    if (!state.navButtonsEnabled) return "";
+    var backDisabled = navIndex <= 0;
+    var forwardDisabled = navIndex >= navHistory.length - 1;
+    return (
+      '<div class="nav-history-row">' +
+        '<button class="nav-hist-btn" data-action="nav-back"' + (backDisabled ? " disabled" : "") + ' aria-label="Назад">' + iconSvg("back", 16) + '</button>' +
+        '<button class="nav-hist-btn" data-action="nav-forward"' + (forwardDisabled ? " disabled" : "") + ' aria-label="Вперёд">' + iconSvg("forward", 16) + '</button>' +
+      '</div>'
+    );
+  }
+
   function renderHeader() {
     if (state.mode === "menu") {
       return (
+        renderNavControls() +
         '<div class="header">' +
           '<div>' +
             '<div class="brand">' + iconSvg("flame", 22) + '<h1>' + esc(state.companyName) + '</h1></div>' +
@@ -581,6 +759,7 @@
     }
     var backAction = state.mode === "debt-form" ? "cancel-debt" : (state.mode === "pay-debt-form" ? "cancel-pay" : (state.mode === "debt-detail" ? "back-to-report" : "open-menu"));
     return (
+      renderNavControls() +
       '<div class="header">' +
         '<button class="back-btn" data-action="' + backAction + '">' + iconSvg("back", 18) + ' Назад</button>' +
         '<h1 class="admin-title">' + (MODE_TITLES[state.mode] || "") + '</h1>' +
@@ -706,6 +885,47 @@
       '<div class="admin-wrap">' +
         '<section><h2 class="section-title">Настройки</h2>' +
           '<input type="text" id="company-name-input" placeholder="Название компании" value="' + esc(state.companyName) + '" />' +
+          '<div class="prep-row">' +
+            '<span class="prep-label">Кнопки навигации (назад/вперёд)</span>' +
+            '<button class="toggle-switch' + (state.navButtonsEnabled ? " on" : "") + '" data-action="toggle-nav-buttons" aria-label="Переключить кнопки навигации"><span class="toggle-knob"></span></button>' +
+          '</div>' +
+          '<div class="backup-actions">' +
+            '<button class="copy-btn' + (state.backupCopied ? " copied" : "") + '" data-action="export-backup">' +
+              (state.backupCopied ? iconSvg("check", 16) + ' Скопировано' : iconSvg("copy", 16) + ' Экспорт (в буфер обмена)') +
+            '</button>' +
+            '<button class="copy-btn ghost" data-action="toggle-import">' + iconSvg("queue", 16) + ' Импорт из текста' + '</button>' +
+          '</div>' +
+          (state.showImport
+            ? (
+                '<div class="import-block">' +
+                  '<textarea id="import-text" rows="5" placeholder="Вставьте сюда скопированный текст резервной копии"></textarea>' +
+                  (state.importError ? '<p class="import-error">' + esc(state.importError) + '</p>' : "") +
+                  '<div class="form-actions">' +
+                    '<button class="btn-primary" data-action="run-import">' + iconSvg("check", 16) + ' Восстановить</button>' +
+                    '<button class="btn-ghost" data-action="toggle-import">' + iconSvg("close", 16) + '</button>' +
+                  '</div>' +
+                '</div>'
+              )
+            : "") +
+          '<div class="danger-zone">' +
+            '<p class="danger-note">Удалит все заказы, долги, товары и настройки без возможности восстановления.</p>' +
+            (state.resetConfirmReady
+              ? (
+                  '<div class="reset-confirm-row">' +
+                    '<button class="danger-btn confirm" data-action="confirm-reset">' + iconSvg("check", 16) + ' Подтвердить сброс</button>' +
+                    '<button class="btn-ghost" data-action="cancel-reset">' + iconSvg("close", 16) + '</button>' +
+                  '</div>'
+                )
+              : state.resetCountdown !== null
+                ? (
+                    '<div class="reset-confirm-row">' +
+                      '<button class="danger-btn" disabled>' + iconSvg("clock", 16) + ' Подтверждение через ' + state.resetCountdown + ' сек</button>' +
+                      '<button class="btn-ghost" data-action="cancel-reset">' + iconSvg("close", 16) + '</button>' +
+                    '</div>'
+                  )
+                : '<button class="danger-btn" data-action="start-reset">' + iconSvg("trash", 16) + ' Сбросить все данные</button>'
+            ) +
+          '</div>' +
         '</section>' +
         '<section><h2 class="section-title">Категории</h2>' + catRows + addCatBlock + '</section>' +
         '<section><h2 class="section-title">Товары</h2>' + prodGroups + '</section>' +
@@ -766,15 +986,18 @@
 
     var ordersListHtml = dayOrders.length === 0
       ? '<p class="empty">В этот день заказов нет.</p>'
-      : '<div class="orders-list">' + dayOrders.map(function (o) {
-          var itemsSummary = o.items.map(function (it) { return it.name + " x" + it.qty; }).join(", ");
+      : '<div class="orders-list queue-list">' + dayOrders.map(function (o) {
+          var itemRows = o.items.map(function (it) {
+            return '<div class="order-line"><span>' + iconForItem(it) + ' ' + esc(it.name) + ' <span class="name-soft">x' + it.qty + '</span></span><span class="price">' + (it.price * it.qty) + ' \u20BD</span></div>';
+          }).join("");
           return (
-            '<div class="product-card">' +
-              '<div class="product-info">' +
-                '<span class="product-name">Заказ №' + o.number + ' <span class="name-soft">' + o.time + '</span></span>' +
-                '<span class="order-items-summary">' + esc(itemsSummary) + '</span>' +
+            '<div class="queue-card">' +
+              '<div class="queue-card-row">' +
+                '<span class="queue-order-num">Заказ <span class="order-num-big">№' + o.number + '</span> <span class="name-soft">' + o.time + '</span></span>' +
+                '<span class="queue-total-badge">' + o.total + ' \u20BD</span>' +
               '</div>' +
-              '<span class="product-price">' + o.total + ' \u20BD</span>' +
+              '<div class="queue-items">' + itemRows + '</div>' +
+              orderStatusBadge(o.id) +
             '</div>'
           );
         }).join("") + '</div>';
@@ -839,7 +1062,9 @@
       return '<section><p class="empty">Нет заказов в ожидании оплаты.</p></section>';
     }
     var rows = state.waitingPayment.slice().reverse().map(function (o) {
-      var itemsSummary = o.items.map(function (it) { return iconForItem(it) + " " + it.name + " x" + it.qty; }).join(", ");
+      var itemRows = o.items.map(function (it) {
+        return '<div class="order-line"><span>' + iconForItem(it) + ' ' + esc(it.name) + ' <span class="name-soft">x' + it.qty + '</span></span><span class="price">' + (it.price * it.qty) + ' \u20BD</span></div>';
+      }).join("");
       var expanded = state.expandedQueueId === o.id;
       var statusRow = expanded
         ? (
@@ -852,13 +1077,11 @@
       return (
         '<div class="queue-card" data-action="toggle-queue-status" data-id="' + o.id + '">' +
           '<div class="queue-card-row">' +
-            '<div class="product-info">' +
-              '<span class="product-name">🧾 Заказ <span class="order-num-big">№' + o.number + '</span> <span class="name-soft">' + o.time + '</span></span>' +
-              '<span class="order-items-summary">' + esc(itemsSummary) + '</span>' +
-              '<span class="order-items-summary">' + iconSvg("clock", 13) + ' ' + o.prepTime + ' мин</span>' +
-            '</div>' +
+            '<span class="queue-order-num">🧾 Заказ <span class="order-num-big">№' + o.number + '</span> <span class="name-soft">' + o.time + '</span></span>' +
             '<span class="queue-total-badge">' + o.total + ' \u20BD</span>' +
           '</div>' +
+          '<div class="queue-items">' + itemRows + '</div>' +
+          '<div class="queue-badges"><span class="queue-badge prep">' + iconSvg("flame", 13) + ' ' + o.prepTime + ' мин</span></div>' +
           statusRow +
         '</div>'
       );
@@ -872,24 +1095,26 @@
       return '<section><p class="empty">Пока нет данных о долгах.</p></section>';
     }
     var rows = openDebts.slice().reverse().map(function (d) {
-      var itemsSummary = d.items.map(function (it) { return it.name + " x" + it.qty; }).join(", ");
+      var itemRows = d.items.map(function (it) {
+        return '<div class="order-line"><span>' + iconForItem(it) + ' ' + esc(it.name) + ' <span class="name-soft">x' + it.qty + '</span></span><span class="price">' + (it.price * it.qty) + ' \u20BD</span></div>';
+      }).join("");
       var dueLabel = d.dueDate ? d.dueDate.split("-").reverse().join(".") : "не указана";
       var remaining = d.amount - (d.paidAmount || 0);
-      var paidNote = d.paidAmount > 0 ? '<span class="order-items-summary">Оплачено: ' + d.paidAmount + ' \u20BD</span>' : "";
+      var metaBadges = '<div class="queue-badges">' +
+        (d.phone ? '<span class="queue-badge">' + esc(d.phone) + '</span>' : "") +
+        (d.address ? '<span class="queue-badge">' + esc(d.address) + '</span>' : "") +
+        '<span class="queue-badge">' + iconSvg("clock", 13) + ' до ' + dueLabel + '</span>' +
+        (d.paidAmount > 0 ? '<span class="order-status-badge paid">Оплачено: ' + d.paidAmount + ' \u20BD</span>' : "") +
+        '</div>';
       return (
-        '<div class="product-card" data-action="view-debt" data-id="' + d.id + '" role="button">' +
-          '<div class="product-info">' +
-            '<span class="product-name">' + esc(d.name) + ' <span class="name-soft">заказ №' + d.orderNumber + '</span></span>' +
-            (d.phone ? '<span class="order-items-summary">' + esc(d.phone) + '</span>' : "") +
-            (d.address ? '<span class="order-items-summary">' + esc(d.address) + '</span>' : "") +
-            '<span class="order-items-summary">' + esc(itemsSummary) + '</span>' +
-            '<span class="order-items-summary">' + iconSvg("clock", 13) + ' до ' + dueLabel + '</span>' +
-            paidNote +
+        '<div class="queue-card" data-action="view-debt" data-id="' + d.id + '" role="button">' +
+          '<div class="queue-card-row">' +
+            '<span class="queue-order-num">' + esc(d.name) + ' <span class="name-soft">заказ №' + d.orderNumber + '</span></span>' +
+            '<span class="queue-total-badge">' + remaining + ' \u20BD</span>' +
           '</div>' +
-          '<div class="stepper">' +
-            '<span class="product-price">' + remaining + ' \u20BD</span>' +
-            '<button class="step-btn pay-btn" data-action="open-pay-form" data-id="' + d.id + '" aria-label="Оплатить">' + iconSvg("check", 14) + ' Оплатить</button>' +
-          '</div>' +
+          '<div class="queue-items">' + itemRows + '</div>' +
+          metaBadges +
+          '<button class="copy-btn pay" data-action="open-pay-form" data-id="' + d.id + '">' + iconSvg("check", 16) + ' Оплатить</button>' +
         '</div>'
       );
     }).join("");
@@ -902,17 +1127,21 @@
       return '<section><p class="empty">Пока нет погашенных долгов.</p></section>';
     }
     var rows = paidDebts.slice().reverse().map(function (d) {
-      var itemsSummary = d.items.map(function (it) { return it.name + " x" + it.qty; }).join(", ");
+      var itemRows = d.items.map(function (it) {
+        return '<div class="order-line"><span>' + iconForItem(it) + ' ' + esc(it.name) + ' <span class="name-soft">x' + it.qty + '</span></span><span class="price">' + (it.price * it.qty) + ' \u20BD</span></div>';
+      }).join("");
       var paidLabel = d.paidDate ? d.paidDate.split("-").reverse().join(".") : "";
       return (
-        '<div class="product-card" data-action="view-debt" data-id="' + d.id + '" role="button">' +
-          '<div class="product-info">' +
-            '<span class="product-name">' + esc(d.name) + ' <span class="name-soft">заказ №' + d.orderNumber + '</span></span>' +
-            (d.phone ? '<span class="order-items-summary">' + esc(d.phone) + '</span>' : "") +
-            '<span class="order-items-summary">' + esc(itemsSummary) + '</span>' +
-            '<span class="order-items-summary">' + iconSvg("check", 13) + ' погашено ' + paidLabel + '</span>' +
+        '<div class="queue-card" data-action="view-debt" data-id="' + d.id + '" role="button">' +
+          '<div class="queue-card-row">' +
+            '<span class="queue-order-num">' + esc(d.name) + ' <span class="name-soft">заказ №' + d.orderNumber + '</span></span>' +
+            '<span class="queue-total-badge">' + d.amount + ' \u20BD</span>' +
           '</div>' +
-          '<span class="product-price">' + d.amount + ' \u20BD</span>' +
+          '<div class="queue-items">' + itemRows + '</div>' +
+          '<div class="queue-badges">' +
+            (d.phone ? '<span class="queue-badge">' + esc(d.phone) + '</span>' : "") +
+            '<span class="order-status-badge paid">' + iconSvg("check", 13) + ' погашено ' + paidLabel + '</span>' +
+          '</div>' +
         '</div>'
       );
     }).join("");
@@ -969,6 +1198,10 @@
     var remaining = d.amount - (d.paidAmount || 0);
     var dueLabel = d.dueDate ? d.dueDate.split("-").reverse().join(".") : "не указана";
     var createdLabel = d.createdDate ? d.createdDate.split("-").reverse().join(".") : "";
+    var infoBadges = '<div class="queue-badges debt-info-badges">' +
+      (d.phone ? '<span class="queue-badge">' + iconSvg("phone", 13) + ' ' + esc(d.phone) + '</span>' : "") +
+      '<span class="queue-badge prep">' + iconSvg("calendar", 13) + ' до ' + dueLabel + '</span>' +
+      '</div>';
     var statusBlock = d.status === "paid"
       ? '<div class="order-total"><span>Погашено</span><span class="sum">' + (d.paidDate ? d.paidDate.split("-").reverse().join(".") : "") + '</span></div>'
       : (
@@ -980,11 +1213,10 @@
       '<div class="admin-wrap"><section>' +
         '<div class="order-summary">' +
           '<h2>' + esc(d.name) + '</h2>' +
-          (d.phone ? '<div class="order-line"><span>Телефон</span><span>' + esc(d.phone) + '</span></div>' : "") +
+          infoBadges +
           (d.address ? '<div class="order-line"><span>Адрес</span><span>' + esc(d.address) + '</span></div>' : "") +
           '<div class="order-line"><span>Заказ</span><span>№' + d.orderNumber + '</span></div>' +
           '<div class="order-line"><span>Оформлен</span><span>' + createdLabel + '</span></div>' +
-          '<div class="order-line"><span>Срок возврата</span><span>' + dueLabel + '</span></div>' +
           itemsHtml +
           '<div class="order-total"><span>Сумма долга</span><span class="sum">' + d.amount + ' \u20BD</span></div>' +
           statusBlock +
@@ -993,9 +1225,90 @@
     );
   }
 
+  var navHistory = [];
+  var navIndex = -1;
+  var navSuppressPush = true;
+  var NAV_HISTORY_LIMIT = 60;
+
+  function captureSnapshot() {
+    return {
+      mode: state.mode,
+      report: JSON.parse(JSON.stringify(state.report)),
+      cart: JSON.parse(JSON.stringify(state.cart)),
+      prepTime: state.prepTime,
+      orderCounter: state.orderCounter,
+      activeCategory: state.activeCategory,
+      companyName: state.companyName,
+      categories: JSON.parse(JSON.stringify(state.categories)),
+      products: JSON.parse(JSON.stringify(state.products)),
+      orders: JSON.parse(JSON.stringify(state.orders)),
+      queue: JSON.parse(JSON.stringify(state.queue)),
+      waitingPayment: JSON.parse(JSON.stringify(state.waitingPayment)),
+      debts: JSON.parse(JSON.stringify(state.debts))
+    };
+  }
+
+  function applySnapshot(snap) {
+    state.mode = snap.mode;
+    state.report = JSON.parse(JSON.stringify(snap.report));
+    state.cart = JSON.parse(JSON.stringify(snap.cart));
+    state.prepTime = snap.prepTime;
+    state.orderCounter = snap.orderCounter;
+    state.activeCategory = snap.activeCategory;
+    state.companyName = snap.companyName;
+    state.categories = JSON.parse(JSON.stringify(snap.categories));
+    state.products = JSON.parse(JSON.stringify(snap.products));
+    state.orders = JSON.parse(JSON.stringify(snap.orders));
+    state.queue = JSON.parse(JSON.stringify(snap.queue));
+    state.waitingPayment = JSON.parse(JSON.stringify(snap.waitingPayment));
+    state.debts = JSON.parse(JSON.stringify(snap.debts));
+    saveData();
+    saveOrders();
+    saveQueue();
+    saveWaitingPayment();
+    saveDebts();
+    saveOrderCounter();
+  }
+
+  function trackNavHistory() {
+    var snapshot = captureSnapshot();
+    var snapshotStr = JSON.stringify(snapshot);
+    if (navSuppressPush) {
+      navSuppressPush = false;
+      navHistory[navIndex === -1 ? 0 : navIndex] = snapshot;
+      if (navIndex === -1) navIndex = 0;
+      return;
+    }
+    if (navIndex >= 0 && JSON.stringify(navHistory[navIndex]) === snapshotStr) return;
+    navHistory = navHistory.slice(0, navIndex + 1);
+    navHistory.push(snapshot);
+    navIndex = navHistory.length - 1;
+    if (navHistory.length > NAV_HISTORY_LIMIT) {
+      navHistory.shift();
+      navIndex -= 1;
+    }
+  }
+
+  function navigateBack() {
+    if (navIndex <= 0) return;
+    navIndex -= 1;
+    applySnapshot(navHistory[navIndex]);
+    navSuppressPush = true;
+    render();
+  }
+
+  function navigateForward() {
+    if (navIndex >= navHistory.length - 1) return;
+    navIndex += 1;
+    applySnapshot(navHistory[navIndex]);
+    navSuppressPush = true;
+    render();
+  }
+
   function render() {
     var app = document.getElementById("app");
     var body;
+    trackNavHistory();
     if (state.mode === "menu") body = renderMenu();
     else if (state.mode === "notifications") body = renderNotifications();
     else if (state.mode === "report") body = renderReport();
@@ -1034,6 +1347,10 @@
       payAmountInput.focus();
       payAmountInput.select();
     }
+    var importTextInput = document.getElementById("import-text");
+    if (importTextInput) {
+      importTextInput.focus();
+    }
     var monthSelect = document.querySelector('[data-action="report-month"]');
     if (monthSelect) {
       monthSelect.addEventListener("change", function (e) {
@@ -1051,6 +1368,15 @@
     var id = el.getAttribute("data-id");
     switch (action) {
       case "open-admin": state.mode = "admin"; render(); break;
+      case "export-backup": exportBackup(); break;
+      case "toggle-import": toggleImport(); break;
+      case "run-import": runImport(); break;
+      case "start-reset": startResetCountdown(); break;
+      case "cancel-reset": cancelResetCountdown(); break;
+      case "confirm-reset": confirmReset(); break;
+      case "nav-back": navigateBack(); break;
+      case "nav-forward": navigateForward(); break;
+      case "toggle-nav-buttons": toggleNavButtons(); break;
       case "open-notifications": state.mode = "notifications"; render(); break;
       case "open-report":
         state.mode = "report";

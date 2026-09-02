@@ -1,4 +1,4 @@
-const CACHE_NAME = "zhar-menu-v2";
+const CACHE_NAME = "zhar-menu-v3";
 const ASSETS = [
   "./",
   "./index.html",
